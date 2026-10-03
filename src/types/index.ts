@@ -21,6 +21,8 @@ export interface DifferenceRegion {
   kind: 'layout' | 'content' | 'color' | 'environment'
   ignored: boolean
   ruleId?: string
+  selector?: string
+  delta?: number
 }
 
 export interface ReviewRecord {
@@ -29,6 +31,7 @@ export interface ReviewRecord {
   reviewer: string
   reason: string
   reviewedAt: string
+  ruleVersion?: number
 }
 
 export interface ScreenshotRun {
@@ -49,6 +52,9 @@ export interface ScreenshotRun {
   regions: DifferenceRegion[]
   review?: ReviewRecord
   mergedRunIds?: string[]
+  ruleVersion?: number
+  lockedRuleVersion?: number
+  reviewDraft?: ReviewDraft
 }
 
 export interface Baseline {
@@ -63,6 +69,7 @@ export interface Baseline {
   approvedAt: string
   runId: string
   active: boolean
+  ruleVersion?: number
 }
 
 export interface IgnoreRule {
@@ -75,6 +82,41 @@ export interface IgnoreRule {
   maxDelta: number
   enabled: boolean
   createdAt: string
+  updatedAt: string
+}
+
+export interface RuleInput {
+  name: string
+  projectId: string
+  selector: string
+  pagePattern: string
+  devicePattern: string
+  maxDelta: number
+  enabled: boolean
+}
+
+export interface RuleUpdateInput extends Partial<RuleInput> {
+  baseVersion?: number
+}
+
+export interface RuleDraft {
+  id: string
+  ruleId: string
+  ruleName: string
+  changes: Partial<RuleInput>
+  baseVersion: number
+  currentVersion: number
+  savedAt: string
+}
+
+export interface RuleMeta {
+  version: number
+  drafts: RuleDraft[]
+}
+
+export interface ReviewDraft {
+  payload: ReviewPayload
+  savedAt: string
 }
 
 export interface DashboardData {
@@ -100,6 +142,8 @@ export interface ReviewPayload {
   decision: 'approved' | 'rejected'
   reviewer: string
   reason: string
+  baseRuleVersion?: number
+  regions?: Array<{ id: string; ignored: boolean }>
 }
 
 export interface ImportRunPayload {

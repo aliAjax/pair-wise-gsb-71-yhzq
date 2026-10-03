@@ -46,6 +46,9 @@ const projectName = (id: string) => projects.value?.find((project) => project.id
           <a-table-column title="批准时间" :width="150">
             <template #cell="{ record }">{{ record.approvedAt.slice(0, 16).replace('T', ' ') }}</template>
           </a-table-column>
+          <a-table-column title="依据规则" :width="100">
+            <template #cell="{ record }"><a-tag>v{{ record.ruleVersion ?? 1 }}</a-tag></template>
+          </a-table-column>
           <a-table-column title="状态" :width="90">
             <template #cell="{ record }"><a-tag :color="record.active ? 'green' : 'gray'">{{ record.active ? '有效' : '已停用' }}</a-tag></template>
           </a-table-column>

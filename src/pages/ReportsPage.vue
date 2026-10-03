@@ -20,7 +20,7 @@ const escapeCsv = (value: string | number) => `"${String(value).replace(/"/g, '"
 
 const exportCsv = () => {
   const rows = [
-    ['运行ID', '页面', '设备', '主题', '构建', '状态', '差异率', '差异区域', '审批人', '审批原因'],
+    ['运行ID', '页面', '设备', '主题', '构建', '状态', '差异率', '差异区域', '规则版本', '审批人', '审批原因'],
     ...(runs.value ?? []).map((run) => [
       run.id,
       run.page,
@@ -30,6 +30,7 @@ const exportCsv = () => {
       run.status,
       run.mismatchRate.toFixed(2),
       run.regions.length,
+      `v${run.ruleVersion ?? 1}`,
       run.review?.reviewer ?? '',
       run.review?.reason ?? '',
     ]),
@@ -80,6 +81,9 @@ const exportCsv = () => {
         <a-table-column title="构建" data-index="build" :width="180" />
         <a-table-column title="差异率" :width="100">
           <template #cell="{ record }">{{ record.mismatchRate.toFixed(2) }}%</template>
+        </a-table-column>
+        <a-table-column title="判定依据" :width="100">
+          <template #cell="{ record }"><a-tag>规则 v{{ record.ruleVersion ?? 1 }}</a-tag></template>
         </a-table-column>
         <a-table-column title="状态" :width="100">
           <template #cell="{ record }"><StatusTag :status="record.status" /></template>

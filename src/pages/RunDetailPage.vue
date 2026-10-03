@@ -5,9 +5,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { Message } from '@arco-design/web-vue'
 import DiffCanvas from '@/components/DiffCanvas.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { getRun, reviewRun } from '@/api/http'
+import { ReviewConflictError, getRun, lockRunReview, reviewRun } from '@/api/http'
 import { useReviewStore } from '@/stores/review'
-import type { DifferenceRegion, ReviewCategory } from '@/types'
+import type { DifferenceRegion, ReviewCategory, ReviewPayload } from '@/types'
 
 interface ReviewForm {
   category: ReviewCategory
@@ -22,6 +22,8 @@ const queryClient = useQueryClient()
 const reviewStore = useReviewStore()
 const runId = computed(() => String(route.params.id))
 const localRegions = ref<DifferenceRegion[]>([])
+const regionsDirty = ref(false)
+const lockRequested = ref(false)
 
 const form = reactive<ReviewForm>({
   category: 'design-change',
@@ -35,11 +37,26 @@ const { data: run, isLoading } = useQuery({
   queryFn: () => getRun(runId.value),
 })
 
+const lockMutation = useMutation({
+  mutationFn: () => lockRunReview(runId.value),
+  onSuccess: async () => {
+    await queryClient.invalidateQueries({ queryKey: ['run', runId.value] })
+  },
+})
+
 watch(
   run,
   (value) => {
-    if (value) localRegions.value = value.regions.map((region) => ({ ...region }))
+    if (!value) return
+    if (!regionsDirty.value) {
+      localRegions.value = value.regions.map((region) => ({ ...region }))
+    }
     reviewStore.setDifferenceFilter('all')
+    // 审批开始时锁定所依据的规则版本
+    if (value.status === 'pending' && !lockRequested.value) {
+      lockRequested.value = true
+      lockMutation.mutate()
+    }
   },
   { immediate: true },
 )
@@ -58,7 +75,7 @@ const suspiciousPixels = computed(() =>
 )
 
 const reviewMutation = useMutation({
-  mutationFn: (payload: ReviewForm) => reviewRun(runId.value, payload),
+  mutationFn: (payload: ReviewPayload) => reviewRun(runId.value, payload),
   onSuccess: async (updated) => {
     Message.success(updated.review?.decision === 'approved' ? '审批通过，新基线已留痕' : '已驳回归并保留原基线')
     await queryClient.invalidateQueries({ queryKey: ['run', runId.value] })
@@ -67,12 +84,25 @@ const reviewMutation = useMutation({
     await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     await router.push('/approvals')
   },
-  onError: (error: Error) => Message.error(error.message),
+  onError: async (error: Error) => {
+    if (error instanceof ReviewConflictError) {
+      // 晚到提交：不覆盖他人结论，本地调整已被服务端保留为草稿
+      Message.warning(error.message)
+      regionsDirty.value = false
+      await queryClient.invalidateQueries({ queryKey: ['run', runId.value] })
+      await queryClient.invalidateQueries({ queryKey: ['runs'] })
+      return
+    }
+    Message.error(error.message)
+  },
 })
 
 const toggleIgnored = (target: DifferenceRegion) => {
   const region = localRegions.value.find((item) => item.id === target.id)
-  if (region) region.ignored = !region.ignored
+  if (region) {
+    region.ignored = !region.ignored
+    regionsDirty.value = true
+  }
 }
 
 const handleDifferenceFilter = (value: string | number | boolean) => {
@@ -82,12 +112,36 @@ const handleDifferenceFilter = (value: string | number | boolean) => {
   }
 }
 
+const loadReviewDraft = () => {
+  const draft = run.value?.reviewDraft
+  if (!draft) return
+  Object.assign(form, {
+    category: draft.payload.category,
+    decision: draft.payload.decision,
+    reviewer: draft.payload.reviewer,
+    reason: draft.payload.reason,
+  })
+  if (draft.payload.regions) {
+    const overrides = new Map(draft.payload.regions.map((item) => [item.id, item.ignored]))
+    localRegions.value = localRegions.value.map((region) =>
+      overrides.has(region.id) ? { ...region, ignored: overrides.get(region.id)! } : region,
+    )
+    regionsDirty.value = true
+  }
+  Message.info('草稿已载入表单，可继续调整后重新提交')
+}
+
 const submitReview = () => {
   if (!form.reason.trim()) {
     Message.warning('请填写审批原因')
     return
   }
-  reviewMutation.mutate({ ...form })
+  if (!run.value) return
+  reviewMutation.mutate({
+    ...form,
+    baseRuleVersion: run.value.lockedRuleVersion ?? run.value.ruleVersion,
+    regions: localRegions.value.map((region) => ({ id: region.id, ignored: region.ignored })),
+  })
 }
 </script>
 
@@ -110,10 +164,33 @@ const submitReview = () => {
         </a-space>
       </section>
 
+      <a-alert
+        v-if="run.status === 'pending' && run.lockedRuleVersion && run.ruleVersion !== run.lockedRuleVersion"
+        type="warning"
+        style="margin-bottom: 16px"
+      >
+        评审期间忽略规则已更新至 v{{ run.ruleVersion }}，差异区域与差异率已重算；本次审批仍按锁定的规则 v{{ run.lockedRuleVersion }} 留痕。
+      </a-alert>
+      <a-alert v-if="run.reviewDraft" type="error" style="margin-bottom: 16px">
+        <div class="draft-alert">
+          <span>
+            该运行已被其他窗口提交，你于 {{ run.reviewDraft.savedAt.slice(5, 16).replace('T', ' ') }} 的调整已保留为草稿。
+          </span>
+          <a-button size="mini" @click="loadReviewDraft">载入草稿</a-button>
+        </div>
+      </a-alert>
+
       <div class="run-facts">
         <div><span>差异率</span><strong :class="{ danger: run.mismatchRate >= 5 }">{{ run.mismatchRate.toFixed(2) }}%</strong></div>
         <div><span>待判定像素</span><strong>{{ suspiciousPixels.toLocaleString() }}</strong></div>
         <div><span>运行标识</span><strong>{{ run.id }}</strong></div>
+        <div>
+          <span>判定依据</span>
+          <strong>
+            规则 v{{ run.ruleVersion ?? 1 }}
+            <template v-if="run.lockedRuleVersion">（锁定 v{{ run.lockedRuleVersion }}）</template>
+          </strong>
+        </div>
         <div><span>构建链路</span><strong>{{ run.baselineVersion }} → {{ run.currentVersion }}</strong></div>
       </div>
 
@@ -168,7 +245,10 @@ const submitReview = () => {
               <span class="region-severity" :class="region.severity">{{ region.severity.toUpperCase() }}</span>
               <span class="region-copy">
                 <strong>{{ region.kind === 'layout' ? '布局位移' : region.kind === 'color' ? '色彩变化' : region.kind === 'content' ? '内容变更' : '环境噪声' }}</strong>
-                <small>区域 {{ region.x }}%, {{ region.y }}% · {{ region.pixels.toLocaleString() }} px</small>
+                <small>
+                  区域 {{ region.x }}%, {{ region.y }}% · {{ region.pixels.toLocaleString() }} px
+                  <template v-if="region.ruleId"> · 命中 {{ region.ruleId }}</template>
+                </small>
               </span>
               <span class="ignore-action">{{ region.ignored ? '恢复' : '忽略' }}</span>
             </button>
@@ -240,6 +320,7 @@ const submitReview = () => {
               <dt>类型</dt><dd>{{ run.review.category }}</dd>
               <dt>人员</dt><dd>{{ run.review.reviewer }}</dd>
               <dt>时间</dt><dd>{{ run.review.reviewedAt.slice(0, 16).replace('T', ' ') }}</dd>
+              <dt>依据规则</dt><dd>v{{ run.review.ruleVersion ?? 1 }}</dd>
             </dl>
             <p>{{ run.review.reason }}</p>
           </div>

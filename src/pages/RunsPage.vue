@@ -233,6 +233,7 @@ const submitImport = async () => {
         <a-table-column title="差异" :width="110">
           <template #cell="{ record }">
             <b :class="{ danger: record.mismatchRate >= 5 }">{{ record.mismatchRate.toFixed(2) }}%</b>
+            <div class="sub-text">规则 v{{ record.ruleVersion ?? 1 }}</div>
           </template>
         </a-table-column>
         <a-table-column title="差异区域" :width="100">

@@ -91,6 +91,9 @@ const unignoredCount = (run: ScreenshotRun) =>
         <a-table-column title="差异区域" :width="150">
           <template #cell="{ record }">{{ unignoredCount(record) }} 处待判定</template>
         </a-table-column>
+        <a-table-column title="判定依据" :width="110">
+          <template #cell="{ record }"><a-tag>规则 v{{ record.ruleVersion ?? 1 }}</a-tag></template>
+        </a-table-column>
         <a-table-column title="构建" data-index="build" :width="180" />
         <a-table-column title="提交时间" :width="150">
           <template #cell="{ record }">{{ record.capturedAt.slice(5, 16).replace('T', ' ') }}</template>
