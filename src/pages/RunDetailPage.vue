@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { Message } from '@arco-design/web-vue'
 import DiffCanvas from '@/components/DiffCanvas.vue'
 import StatusTag from '@/components/StatusTag.vue'
-import { getRun, reviewRun } from '@/api/http'
+import { getRun, getRules, reviewRun } from '@/api/http'
 import { useReviewStore } from '@/stores/review'
 import type { DifferenceRegion, ReviewCategory } from '@/types'
 
@@ -14,6 +14,7 @@ interface ReviewForm {
   decision: 'approved' | 'rejected'
   reviewer: string
   reason: string
+  ruleVersion?: number
 }
 
 const route = useRoute()
@@ -34,6 +35,11 @@ const { data: run, isLoading } = useQuery({
   queryKey: computed(() => ['run', runId.value]),
   queryFn: () => getRun(runId.value),
 })
+
+const { data: rulesSnapshot } = useQuery({ queryKey: ['rules'], queryFn: getRules })
+
+const ruleName = (id?: string) =>
+  rulesSnapshot.value?.rules.find((rule) => rule.id === id)?.name ?? ''
 
 watch(
   run,
@@ -67,7 +73,14 @@ const reviewMutation = useMutation({
     await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     await router.push('/approvals')
   },
-  onError: (error: Error) => Message.error(error.message),
+  onError: async (error: Error) => {
+    Message.error(error.message)
+    if (error.message.includes('规则版本')) {
+      // 评审期间规则被改动：重新加载已重算的差异区域再确认
+      await queryClient.invalidateQueries({ queryKey: ['run', runId.value] })
+      await queryClient.invalidateQueries({ queryKey: ['runs'] })
+    }
+  },
 })
 
 const toggleIgnored = (target: DifferenceRegion) => {
@@ -87,7 +100,8 @@ const submitReview = () => {
     Message.warning('请填写审批原因')
     return
   }
-  reviewMutation.mutate({ ...form })
+  // 提交时携带评审开始所依据的规则版本，服务端据此锁定
+  reviewMutation.mutate({ ...form, ruleVersion: run.value?.ruleVersion })
 }
 </script>
 
@@ -111,8 +125,17 @@ const submitReview = () => {
       </section>
 
       <div class="run-facts">
-        <div><span>差异率</span><strong :class="{ danger: run.mismatchRate >= 5 }">{{ run.mismatchRate.toFixed(2) }}%</strong></div>
+        <div>
+          <span>差异率（已排除忽略区域）</span>
+          <strong :class="{ danger: run.mismatchRate >= 5 }">{{ run.mismatchRate.toFixed(2) }}%</strong>
+          <span class="fact-sub">含忽略区域 {{ run.rawMismatchRate.toFixed(2) }}%</span>
+        </div>
         <div><span>待判定像素</span><strong>{{ suspiciousPixels.toLocaleString() }}</strong></div>
+        <div>
+          <span>判定依据</span>
+          <strong>规则版本 v{{ run.ruleVersion }}</strong>
+          <span v-if="run.review?.ruleVersion" class="fact-sub">审批锁定 v{{ run.review.ruleVersion }}</span>
+        </div>
         <div><span>运行标识</span><strong>{{ run.id }}</strong></div>
         <div><span>构建链路</span><strong>{{ run.baselineVersion }} → {{ run.currentVersion }}</strong></div>
       </div>
@@ -169,6 +192,9 @@ const submitReview = () => {
               <span class="region-copy">
                 <strong>{{ region.kind === 'layout' ? '布局位移' : region.kind === 'color' ? '色彩变化' : region.kind === 'content' ? '内容变更' : '环境噪声' }}</strong>
                 <small>区域 {{ region.x }}%, {{ region.y }}% · {{ region.pixels.toLocaleString() }} px</small>
+                <small v-if="region.ignored && region.ruleId" class="region-rule">被规则「{{ ruleName(region.ruleId) }}」忽略</small>
+                <small v-else-if="region.ignored" class="region-rule">手动忽略</small>
+                <small v-else-if="region.selector" class="region-selector">{{ region.selector }}</small>
               </span>
               <span class="ignore-action">{{ region.ignored ? '恢复' : '忽略' }}</span>
             </button>
@@ -225,6 +251,9 @@ const submitReview = () => {
                 placeholder="说明业务需求、设计稿或异常依据"
               />
             </a-form-item>
+            <a-alert type="info" style="margin-bottom: 16px">
+              提交后将锁定规则版本 v{{ run.ruleVersion }} 作为判定依据；批准后基线保留该版本，后续规则改动不影响本次结论。
+            </a-alert>
             <a-alert v-if="form.decision === 'approved'" type="warning" style="margin-bottom: 16px">
               批准后只会新增基线版本，原基线仍可追溯，不会被覆盖。
             </a-alert>
@@ -240,6 +269,7 @@ const submitReview = () => {
               <dt>类型</dt><dd>{{ run.review.category }}</dd>
               <dt>人员</dt><dd>{{ run.review.reviewer }}</dd>
               <dt>时间</dt><dd>{{ run.review.reviewedAt.slice(0, 16).replace('T', ' ') }}</dd>
+              <dt v-if="run.review.ruleVersion">依据</dt><dd v-if="run.review.ruleVersion">规则版本 v{{ run.review.ruleVersion }}</dd>
             </dl>
             <p>{{ run.review.reason }}</p>
           </div>

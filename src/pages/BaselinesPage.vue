@@ -43,6 +43,9 @@ const projectName = (id: string) => projects.value?.find((project) => project.id
             <template #cell="{ record }">{{ record.device }} · {{ record.theme === 'light' ? '浅色' : '深色' }}</template>
           </a-table-column>
           <a-table-column title="批准人" data-index="approvedBy" :width="100" />
+          <a-table-column title="判定依据" :width="110">
+            <template #cell="{ record }"><a-tag>规则 v{{ record.ruleVersion ?? 1 }}</a-tag></template>
+          </a-table-column>
           <a-table-column title="批准时间" :width="150">
             <template #cell="{ record }">{{ record.approvedAt.slice(0, 16).replace('T', ' ') }}</template>
           </a-table-column>

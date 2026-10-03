@@ -19,6 +19,7 @@ export interface DifferenceRegion {
   severity: Severity
   pixels: number
   kind: 'layout' | 'content' | 'color' | 'environment'
+  selector?: string
   ignored: boolean
   ruleId?: string
 }
@@ -29,6 +30,7 @@ export interface ReviewRecord {
   reviewer: string
   reason: string
   reviewedAt: string
+  ruleVersion?: number
 }
 
 export interface ScreenshotRun {
@@ -41,6 +43,8 @@ export interface ScreenshotRun {
   build: string
   status: RunStatus
   mismatchRate: number
+  rawMismatchRate: number
+  ruleVersion: number
   capturedAt: string
   baselineVersion: string
   currentVersion: string
@@ -63,6 +67,7 @@ export interface Baseline {
   approvedAt: string
   runId: string
   active: boolean
+  ruleVersion?: number
 }
 
 export interface IgnoreRule {
@@ -75,6 +80,11 @@ export interface IgnoreRule {
   maxDelta: number
   enabled: boolean
   createdAt: string
+}
+
+export interface RulesSnapshot {
+  version: number
+  rules: IgnoreRule[]
 }
 
 export interface DashboardData {
@@ -100,6 +110,7 @@ export interface ReviewPayload {
   decision: 'approved' | 'rejected'
   reviewer: string
   reason: string
+  ruleVersion?: number
 }
 
 export interface ImportRunPayload {

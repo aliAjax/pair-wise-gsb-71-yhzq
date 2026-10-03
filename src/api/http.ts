@@ -1,5 +1,6 @@
 import axios, { type AxiosAdapter, type InternalAxiosRequestConfig } from 'axios'
-import { readDb, writeDb } from '@/mocks/db'
+import { normalizePendingRuns, readDb, writeDb, type Database } from '@/mocks/db'
+import { applyRulesToRun } from '@/utils/rules'
 import type {
   Baseline,
   DashboardData,
@@ -7,9 +8,20 @@ import type {
   ImportRunPayload,
   Project,
   ReviewPayload,
+  RulesSnapshot,
   RunFilters,
   ScreenshotRun,
 } from '@/types'
+
+export class RuleConflictError extends Error {
+  latestVersion: number
+
+  constructor(latestVersion: number) {
+    super('规则已被其他窗口修改，本次调整已保留为草稿，请核对最新规则后重新提交')
+    this.name = 'RuleConflictError'
+    this.latestVersion = latestVersion
+  }
+}
 
 export const api = axios.create({
   baseURL: '/mock-api',
@@ -28,6 +40,19 @@ const respond = <T>(config: InternalAxiosRequestConfig, data: T, status = 200) =
 const parseBody = <T>(config: InternalAxiosRequestConfig): T => {
   if (typeof config.data === 'string') return JSON.parse(config.data) as T
   return config.data as T
+}
+
+/** 规则集版本乐观锁：提交基于旧版本时拒绝，由调用方保留草稿。 */
+const assertRuleBaseVersion = (db: Database, baseVersion?: number): void => {
+  if (typeof baseVersion === 'number' && baseVersion !== db.rulesVersion) {
+    throw new RuleConflictError(db.rulesVersion)
+  }
+}
+
+/** 规则一旦改动：版本递增，未审批运行立即重算差异区域与差异率。 */
+const applyRuleChange = (db: Database): void => {
+  db.rulesVersion += 1
+  normalizePendingRuns(db)
 }
 
 const mockAdapter: AxiosAdapter = async (config) => {
@@ -93,10 +118,18 @@ const mockAdapter: AxiosAdapter = async (config) => {
     const payload = parseBody<ReviewPayload>(config)
     const run = db.runs.find((item) => item.id === reviewMatch[1])
     if (!run) throw new Error('运行记录不存在')
+    // 审批开始时锁定所依据的规则版本：评审期间规则被改动则要求重新确认
+    if (typeof payload.ruleVersion === 'number' && payload.ruleVersion !== run.ruleVersion) {
+      throw new Error('规则版本已更新，差异区域与差异率已按最新规则重算，请确认后再提交审批')
+    }
     run.status = payload.decision
     run.review = {
-      ...payload,
+      category: payload.category,
+      decision: payload.decision,
+      reviewer: payload.reviewer,
+      reason: payload.reason,
       reviewedAt: new Date().toISOString(),
+      ruleVersion: run.ruleVersion,
     }
     if (payload.decision === 'approved') {
       const baseline = db.baselines.find(
@@ -120,6 +153,7 @@ const mockAdapter: AxiosAdapter = async (config) => {
         approvedAt: new Date().toISOString(),
         runId: run.id,
         active: true,
+        ruleVersion: run.ruleVersion,
       })
     }
     writeDb(db)
@@ -133,9 +167,11 @@ const mockAdapter: AxiosAdapter = async (config) => {
     const [first, ...rest] = selected
     first.mergedRunIds = selected.map((run) => run.id)
     first.status = 'merged'
-    first.mismatchRate =
-      selected.reduce((sum, run) => sum + run.mismatchRate, 0) / Math.max(selected.length, 1)
+    first.rawMismatchRate =
+      selected.reduce((sum, run) => sum + run.rawMismatchRate, 0) / Math.max(selected.length, 1)
     first.regions = rest.flatMap((run) => run.regions).slice(0, 8)
+    applyRulesToRun(first, db.rules)
+    first.ruleVersion = db.rulesVersion
     writeDb(db)
     return respond(config, first, 201)
   }
@@ -165,6 +201,8 @@ const mockAdapter: AxiosAdapter = async (config) => {
         build: payload.build.trim(),
         status: 'pending',
         mismatchRate,
+        rawMismatchRate: mismatchRate,
+        ruleVersion: db.rulesVersion,
         capturedAt: new Date().toISOString(),
         baselineVersion: payload.baselineVersion.trim() || '当前有效基线',
         currentVersion: payload.currentVersion.trim() || payload.build.trim(),
@@ -180,6 +218,7 @@ const mockAdapter: AxiosAdapter = async (config) => {
             severity,
             pixels: Math.round(file.size / 8 || 620),
             kind: 'layout',
+            selector: '.page-header-banner',
             ignored: false,
           },
           {
@@ -190,11 +229,13 @@ const mockAdapter: AxiosAdapter = async (config) => {
             height: 10,
             severity: severity === 'high' ? 'medium' : 'low',
             pixels: Math.round(file.size / 18 || 180),
-            kind: 'color',
+            kind: 'environment',
+            selector: '[data-visual-ignore="relative-time"]',
             ignored: false,
           },
         ],
       }
+      applyRulesToRun(run, db.rules)
       return run
     })
     db.runs.unshift(...imported)
@@ -211,36 +252,45 @@ const mockAdapter: AxiosAdapter = async (config) => {
   }
 
   if (method === 'get' && path === '/rules') {
-    return respond<IgnoreRule[]>(config, db.rules)
+    return respond<RulesSnapshot>(config, { version: db.rulesVersion, rules: db.rules })
   }
 
   if (method === 'post' && path === '/rules') {
-    const input = parseBody<Omit<IgnoreRule, 'id' | 'createdAt'>>(config)
+    const input = parseBody<RuleMutationPayload>(config)
+    assertRuleBaseVersion(db, input.baseVersion)
+    const { baseVersion, ...rest } = input
     const rule: IgnoreRule = {
-      ...input,
+      ...rest,
       id: `rule-${Date.now()}`,
       createdAt: new Date().toISOString(),
     }
     db.rules.unshift(rule)
+    applyRuleChange(db)
     writeDb(db)
-    return respond(config, rule, 201)
+    return respond<RulesSnapshot>(config, { version: db.rulesVersion, rules: db.rules }, 201)
   }
 
   const ruleMatch = path.match(/^\/rules\/([^/]+)$/)
   if (method === 'patch' && ruleMatch) {
-    const payload = parseBody<Partial<IgnoreRule>>(config)
+    const payload = parseBody<Partial<IgnoreRule> & { baseVersion?: number }>(config)
+    assertRuleBaseVersion(db, payload.baseVersion)
     const rule = db.rules.find((item) => item.id === ruleMatch[1])
     if (!rule) throw new Error('规则不存在')
-    Object.assign(rule, payload)
+    const { baseVersion, ...rest } = payload
+    Object.assign(rule, rest)
+    applyRuleChange(db)
     writeDb(db)
-    return respond(config, rule)
+    return respond<RulesSnapshot>(config, { version: db.rulesVersion, rules: db.rules })
   }
   if (method === 'delete' && ruleMatch) {
+    const payload = parseBody<{ baseVersion?: number }>(config)
+    assertRuleBaseVersion(db, payload?.baseVersion)
     const index = db.rules.findIndex((item) => item.id === ruleMatch[1])
     if (index < 0) throw new Error('规则不存在')
     db.rules.splice(index, 1)
+    applyRuleChange(db)
     writeDb(db)
-    return respond(config, { success: true })
+    return respond<RulesSnapshot>(config, { version: db.rulesVersion, rules: db.rules })
   }
 
   throw new Error(`Mock API 未实现：${method.toUpperCase()} ${path}`)
@@ -263,12 +313,25 @@ export const importRuns = async (payload: ImportRunPayload): Promise<ScreenshotR
   (await api.post<ScreenshotRun[]>('/runs/import', payload)).data
 export const getBaselines = async (projectId?: string): Promise<Baseline[]> =>
   (await api.get<Baseline[]>('/baselines', { params: { projectId } })).data
-export const getRules = async (): Promise<IgnoreRule[]> =>
-  (await api.get<IgnoreRule[]>('/rules')).data
-export const createRule = async (
-  payload: Omit<IgnoreRule, 'id' | 'createdAt'>,
-): Promise<IgnoreRule> => (await api.post<IgnoreRule>('/rules', payload)).data
-export const toggleRule = async (id: string, enabled: boolean): Promise<IgnoreRule> =>
-  (await api.patch<IgnoreRule>(`/rules/${id}`, { enabled })).data
-export const deleteRule = async (id: string): Promise<{ success: boolean }> =>
-  (await api.delete<{ success: boolean }>(`/rules/${id}`)).data
+
+export type RuleInput = Omit<IgnoreRule, 'id' | 'createdAt'>
+type RuleMutationPayload = RuleInput & { baseVersion?: number }
+
+export const getRules = async (): Promise<RulesSnapshot> =>
+  (await api.get<RulesSnapshot>('/rules')).data
+export const createRule = async (payload: RuleInput, baseVersion: number): Promise<RulesSnapshot> =>
+  (await api.post<RulesSnapshot>('/rules', { ...payload, baseVersion })).data
+export const updateRule = async (
+  id: string,
+  payload: Partial<RuleInput>,
+  baseVersion: number,
+): Promise<RulesSnapshot> =>
+  (await api.patch<RulesSnapshot>(`/rules/${id}`, { ...payload, baseVersion })).data
+export const toggleRule = async (
+  id: string,
+  enabled: boolean,
+  baseVersion: number,
+): Promise<RulesSnapshot> =>
+  (await api.patch<RulesSnapshot>(`/rules/${id}`, { enabled, baseVersion })).data
+export const deleteRule = async (id: string, baseVersion: number): Promise<RulesSnapshot> =>
+  (await api.delete<RulesSnapshot>(`/rules/${id}`, { data: { baseVersion } })).data

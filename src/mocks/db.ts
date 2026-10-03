@@ -1,12 +1,14 @@
 import type { Baseline, DifferenceRegion, IgnoreRule, Project, ScreenshotRun } from '@/types'
+import { applyRulesToRun } from '@/utils/rules'
 
 const STORAGE_KEY = 'visual-regression-platform-v1'
 
-interface Database {
+export interface Database {
   projects: Project[]
   runs: ScreenshotRun[]
   baselines: Baseline[]
   rules: IgnoreRule[]
+  rulesVersion: number
 }
 
 const projects: Project[] = [
@@ -25,6 +27,7 @@ const makeRegions = (prefix: string, intensity: number): DifferenceRegion[] => [
     severity: 'high',
     pixels: Math.round(1840 * intensity),
     kind: 'layout',
+    selector: '.order-summary-panel',
     ignored: false,
   },
   {
@@ -36,6 +39,7 @@ const makeRegions = (prefix: string, intensity: number): DifferenceRegion[] => [
     severity: 'medium',
     pixels: Math.round(720 * intensity),
     kind: 'color',
+    selector: '.user-avatar img',
     ignored: false,
   },
   {
@@ -47,8 +51,8 @@ const makeRegions = (prefix: string, intensity: number): DifferenceRegion[] => [
     severity: 'low',
     pixels: Math.round(216 * intensity),
     kind: 'environment',
-    ignored: true,
-    ruleId: 'rule-time',
+    selector: '[data-visual-ignore="relative-time"]',
+    ignored: false,
   },
 ]
 
@@ -63,6 +67,8 @@ const runs: ScreenshotRun[] = [
     build: 'release/6.18.0',
     status: 'pending',
     mismatchRate: 3.82,
+    rawMismatchRate: 3.82,
+    ruleVersion: 1,
     capturedAt: '2026-09-29T08:42:00+08:00',
     baselineVersion: 'v6.17.4-baseline',
     currentVersion: 'v6.18.0-rc2',
@@ -78,6 +84,8 @@ const runs: ScreenshotRun[] = [
     build: 'release/6.18.0',
     status: 'pending',
     mismatchRate: 1.36,
+    rawMismatchRate: 1.36,
+    ruleVersion: 1,
     capturedAt: '2026-09-29T08:36:00+08:00',
     baselineVersion: 'v6.17.4-baseline',
     currentVersion: 'v6.18.0-rc2',
@@ -93,6 +101,8 @@ const runs: ScreenshotRun[] = [
     build: 'feature/billing-v3',
     status: 'approved',
     mismatchRate: 5.14,
+    rawMismatchRate: 5.14,
+    ruleVersion: 1,
     capturedAt: '2026-09-28T17:20:00+08:00',
     baselineVersion: 'v5.9.1-baseline',
     currentVersion: 'billing-v3.7',
@@ -103,6 +113,7 @@ const runs: ScreenshotRun[] = [
       reviewer: '林默',
       reason: '新计费周期列按需求上线，已核对设计稿和验收单。',
       reviewedAt: '2026-09-28T18:02:00+08:00',
+      ruleVersion: 1,
     },
   },
   {
@@ -115,6 +126,8 @@ const runs: ScreenshotRun[] = [
     build: 'feature/campaign-editor',
     status: 'rejected',
     mismatchRate: 10.73,
+    rawMismatchRate: 10.73,
+    ruleVersion: 1,
     capturedAt: '2026-09-28T15:11:00+08:00',
     baselineVersion: 'v2.4.0-baseline',
     currentVersion: 'campaign-v2',
@@ -125,6 +138,7 @@ const runs: ScreenshotRun[] = [
       reviewer: '梁琪',
       reason: '主操作区被侧栏遮挡，属于阻断性渲染异常。',
       reviewedAt: '2026-09-28T15:44:00+08:00',
+      ruleVersion: 1,
     },
   },
   {
@@ -137,6 +151,8 @@ const runs: ScreenshotRun[] = [
     build: 'release/5.10.0',
     status: 'pending',
     mismatchRate: 2.08,
+    rawMismatchRate: 2.08,
+    ruleVersion: 1,
     capturedAt: '2026-09-28T13:30:00+08:00',
     baselineVersion: 'v5.9.1-baseline',
     currentVersion: 'v5.10.0-rc1',
@@ -152,6 +168,8 @@ const runs: ScreenshotRun[] = [
     build: 'release/2.6.0',
     status: 'pending',
     mismatchRate: 0.94,
+    rawMismatchRate: 0.94,
+    ruleVersion: 1,
     capturedAt: '2026-09-27T19:15:00+08:00',
     baselineVersion: 'v2.5.3-baseline',
     currentVersion: 'v2.6.0-rc3',
@@ -172,6 +190,7 @@ const baselines: Baseline[] = [
     approvedAt: '2026-09-19T11:30:00+08:00',
     runId: 'run-998',
     active: true,
+    ruleVersion: 1,
   },
   {
     id: 'base-console-billing',
@@ -185,6 +204,7 @@ const baselines: Baseline[] = [
     approvedAt: '2026-09-12T14:05:00+08:00',
     runId: 'run-961',
     active: true,
+    ruleVersion: 1,
   },
   {
     id: 'base-growth-campaign',
@@ -198,6 +218,7 @@ const baselines: Baseline[] = [
     approvedAt: '2026-08-28T10:10:00+08:00',
     runId: 'run-902',
     active: false,
+    ruleVersion: 1,
   },
   {
     id: 'base-commerce-list',
@@ -211,6 +232,7 @@ const baselines: Baseline[] = [
     approvedAt: '2026-09-20T16:40:00+08:00',
     runId: 'run-1002',
     active: true,
+    ruleVersion: 1,
   },
 ]
 
@@ -231,11 +253,22 @@ const rules: IgnoreRule[] = [
     name: '用户头像随机图',
     projectId: 'p-commerce',
     selector: '.user-avatar img',
-    pagePattern: '/checkout/*',
+    pagePattern: '订单*',
     devicePattern: '*',
     maxDelta: 20,
     enabled: true,
     createdAt: '2026-09-05T13:25:00+08:00',
+  },
+  {
+    id: 'rule-commerce-time',
+    name: '交易时间戳严格忽略',
+    projectId: 'p-commerce',
+    selector: '[data-visual-ignore="relative-time"]',
+    pagePattern: '*',
+    devicePattern: 'Desktop*',
+    maxDelta: 6,
+    enabled: true,
+    createdAt: '2026-09-10T10:00:00+08:00',
   },
   {
     id: 'rule-watermark',
@@ -261,19 +294,87 @@ const rules: IgnoreRule[] = [
   },
 ]
 
-const seed = (): Database => ({ projects, runs, baselines, rules })
+const seed = (): Database => ({ projects, runs, baselines, rules, rulesVersion: 1 })
+
+/** 未审批运行按当前规则重算差异区域与差异率，并标记所依据的规则版本。 */
+export const normalizePendingRuns = (db: Database): void => {
+  db.runs.forEach((run) => {
+    if (run.status !== 'pending') return
+    applyRulesToRun(run, db.rules)
+    run.ruleVersion = db.rulesVersion
+  })
+}
+
+/**
+ * 旧数据迁移：规则缺少作用域记录时按全部项目、全部页面、全部设备回填；
+ * 运行补充原始差异率与规则版本；区域缺少选择器时按命中规则回填。
+ */
+const migrateDb = (db: Database): boolean => {
+  let changed = false
+  if (typeof db.rulesVersion !== 'number') {
+    db.rulesVersion = 1
+    changed = true
+  }
+  db.rules.forEach((rule) => {
+    if (!rule.projectId) {
+      rule.projectId = 'all'
+      changed = true
+    }
+    if (!rule.pagePattern) {
+      rule.pagePattern = '*'
+      changed = true
+    }
+    if (!rule.devicePattern) {
+      rule.devicePattern = '*'
+      changed = true
+    }
+  })
+  db.runs.forEach((run) => {
+    if (typeof run.rawMismatchRate !== 'number') {
+      run.rawMismatchRate = run.mismatchRate
+      changed = true
+    }
+    if (typeof run.ruleVersion !== 'number') {
+      run.ruleVersion = db.rulesVersion
+      changed = true
+    }
+    run.regions.forEach((region) => {
+      if (!region.selector && region.ruleId) {
+        const source = db.rules.find((rule) => rule.id === region.ruleId)
+        if (source) {
+          region.selector = source.selector
+          changed = true
+        }
+      }
+    })
+  })
+  db.baselines.forEach((baseline) => {
+    if (typeof baseline.ruleVersion !== 'number') {
+      baseline.ruleVersion = db.rulesVersion
+      changed = true
+    }
+  })
+  return changed
+}
 
 export const readDb = (): Database => {
   const raw = localStorage.getItem(STORAGE_KEY)
   if (!raw) {
     const initial = seed()
+    normalizePendingRuns(initial)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(initial))
     return initial
   }
   try {
-    return JSON.parse(raw) as Database
+    const parsed = JSON.parse(raw) as Database
+    if (migrateDb(parsed)) {
+      normalizePendingRuns(parsed)
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+    }
+    return parsed
   } catch {
     const initial = seed()
+    normalizePendingRuns(initial)
     localStorage.setItem(STORAGE_KEY, JSON.stringify(initial))
     return initial
   }

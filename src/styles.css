@@ -439,7 +439,7 @@ code {
 
 .run-facts {
   display: grid;
-  grid-template-columns: 0.7fr 0.9fr 1fr 1.6fr;
+  grid-template-columns: 1.1fr 0.8fr 0.9fr 0.8fr 1.6fr;
   margin-bottom: 16px;
   border: 1px solid #e5e6eb;
   border-radius: 7px;
@@ -471,6 +471,14 @@ code {
   font-size: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.run-facts .fact-sub {
+  display: block;
+  margin-top: 4px;
+  margin-bottom: 0;
+  color: #86909c;
+  font-size: 11px;
 }
 
 .review-workspace {
@@ -674,6 +682,16 @@ code {
 .region-copy small {
   color: #86909c;
   font-size: 10px;
+}
+
+.region-copy .region-rule {
+  margin-top: 2px;
+  color: #165dff;
+}
+
+.region-copy .region-selector {
+  margin-top: 2px;
+  font-family: monospace;
 }
 
 .ignore-action {
